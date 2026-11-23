@@ -329,7 +329,7 @@ On the CPU server, export `OPENAI_COMPATIBLE_API_KEY` in the launching shell. Th
   unset EMBEDDING_API_KEY
   repo=/mnt/sdd3/xuancheng/code/github/EvoSkill
   session=sq-original-evoskill
-  export EVO_RUN_DIR="$HOME/searchqa-original-runs/20261124-r1/evoskill"
+  export EVO_RUN_DIR="$HOME/searchqa-original-runs/20261124-r1/evoskill-attempt2"
   export EVO_PYTHON="$HOME/miniconda3/bin/python"
   export PYTHONPATH="$HOME/.cache/uv/archive-v0/Xgr_JH5lu1epaTUF"
   export PATH="$HOME/.opencode/bin:$PATH"
@@ -345,6 +345,12 @@ On the CPU server, export `OPENAI_COMPATIBLE_API_KEY` in the launching shell. Th
     exit 1
   fi
   cd "$repo"
+  GIT_AUTHOR_NAME=$(git -C "$repo" config --get user.name)
+  GIT_AUTHOR_EMAIL=$(git -C "$repo" config --get user.email)
+  : "${GIT_AUTHOR_NAME:?configure user.name in the EvoSkill checkout}"
+  : "${GIT_AUTHOR_EMAIL:?configure user.email in the EvoSkill checkout}"
+  export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL
+  export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME" GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
   "$EVO_PYTHON" -B -c 'import httpx, pydantic, tqdm, yaml'
   test -x "$HOME/.opencode/bin/opencode"
   mkdir -p "$(dirname "$EVO_RUN_DIR")"
@@ -364,6 +370,8 @@ On the CPU server, export `OPENAI_COMPATIBLE_API_KEY` in the launching shell. Th
   '
 )
 ```
+
+The first attempt in `20261124-r1/evoskill` exited while creating the initial Git commit, before any model calls. The command above starts a fresh `evoskill-attempt2` workspace and supplies the source checkout’s Git identity to its candidate commits.
 
 Attach with `tmux -L sq-original-evoskill attach -t sq-original-evoskill`. The run directory contains `console.log` and, after exit, `exit.code`. The best program's dev EM and held-out test EM/F1 are in `workspace/.evoskill/test_summary.json`. Use a fresh run directory for a repeat. See the [fixed SearchQA workflow](examples/searchqa/README.md) for data fingerprints and per-item outputs.
 
