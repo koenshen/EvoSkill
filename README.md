@@ -317,6 +317,56 @@ ls .claude/skills/             # all learned skills
 
 Copy `.claude/program.yaml` and `.claude/skills/` into your deployment to use the evolved agent configuration.
 
+### Reproduce the CPU SearchQA original run
+
+On the CPU server, export `OPENAI_COMPATIBLE_API_KEY` in the launching shell. The command below uses the fixed SearchQA train/dev/test split (400/200/1,400), the TokenHub DeepSeek deployment for all five roles, and 24 concurrent dev/test answers. Both role-specific output caps are 131,072 tokens. EvoSkill uses its native skill-only loop with up to seven iterations, frontier size three, and a no-improvement limit of five. This run used Python 3.14.9 in the CPU base Conda environment, the existing PyYAML 6.0.3 package, and OpenCode 1.18.21.
+
+```bash
+# CPU tmux launch (20261124-r1)
+(
+  set -eu
+  : "${OPENAI_COMPATIBLE_API_KEY:?export the TokenHub key in the CPU shell first}"
+  unset EMBEDDING_API_KEY
+  repo=/mnt/sdd3/xuancheng/code/github/EvoSkill
+  session=sq-original-evoskill
+  export EVO_RUN_DIR="$HOME/searchqa-original-runs/20261124-r1/evoskill"
+  export EVO_PYTHON="$HOME/miniconda3/bin/python"
+  export PYTHONPATH="$HOME/.cache/uv/archive-v0/Xgr_JH5lu1epaTUF"
+  export PATH="$HOME/.opencode/bin:$PATH"
+  export SEARCHQA_SPLIT_DIR=/mnt/sdd3/xuancheng/code/github/SkillOpt/data/searchqa_split
+  export OPENAI_COMPATIBLE_BASE_URL=https://tokenhub.sensetime.com/v1
+  export OPENAI_COMPATIBLE_MODEL=deepseek-v4.1-flash-1017/huoshan_L/sfc
+  export TARGET_OPENAI_COMPATIBLE_MAX_TOKENS=131072
+  export OPTIMIZER_OPENAI_COMPATIBLE_MAX_TOKENS=131072
+  export SKILLOPT_WORKERS=24
+
+  if tmux -L "$session" list-sessions >/dev/null 2>&1; then
+    echo "tmux socket $session already has a session" >&2
+    exit 1
+  fi
+  cd "$repo"
+  "$EVO_PYTHON" -B -c 'import httpx, pydantic, tqdm, yaml'
+  test -x "$HOME/.opencode/bin/opencode"
+  mkdir -p "$(dirname "$EVO_RUN_DIR")"
+  mkdir "$EVO_RUN_DIR"
+
+  tmux -L "$session" new-session -d -s "$session" -c "$repo" '
+    {
+      git rev-parse HEAD
+      "$EVO_PYTHON" --version
+      opencode --version
+      "$EVO_PYTHON" -B -u examples/searchqa/run.py --harness openai-compatible \
+        --split-dir "$SEARCHQA_SPLIT_DIR" --work-dir "$EVO_RUN_DIR/workspace"
+      status=$?
+      printf "%s\n" "$status" > "$EVO_RUN_DIR/exit.code"
+    } 2>&1 | tee "$EVO_RUN_DIR/console.log"
+    exit "$(cat "$EVO_RUN_DIR/exit.code")"
+  '
+)
+```
+
+Attach with `tmux -L sq-original-evoskill attach -t sq-original-evoskill`. The run directory contains `console.log` and, after exit, `exit.code`. The best program's dev EM and held-out test EM/F1 are in `workspace/.evoskill/test_summary.json`. Use a fresh run directory for a repeat. See the [fixed SearchQA workflow](examples/searchqa/README.md) for data fingerprints and per-item outputs.
+
 ## Harbor Integration
 
 [Harbor](https://github.com/harbor-framework/harbor) is a framework for evaluating AI agents against containerized benchmark tasks. EvoSkill integrates with Harbor as an alternative to CSV-based datasets, using Harbor's built-in verifiers as the scoring mechanism.
