@@ -8,6 +8,7 @@ format is a nested ``model: {providerID, modelID}`` object).
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import os
 import signal
@@ -30,6 +31,7 @@ from ..provider_auth import (
 _SERVER_PORTS: dict[str, int] = {}
 _SERVER_PIDS: dict[str, int] = {}
 _SPAWNED_THIS_RUN: set[str] = set()
+_SKILL_VERSIONS: dict[str, bytes] = {}
 
 _TIMEOUT = 1800  # per-request HTTP timeout (30 min — opencode agents can take 15+ min on complex queries)
 
@@ -87,17 +89,6 @@ def _kill_pid(pid: int) -> None:
         pass
 
 
-def _kill_all_opencode_servers() -> None:
-    """Kill all opencode serve processes on this machine."""
-    try:
-        subprocess.run(
-            ["pkill", "-f", "opencode serve"],
-            capture_output=True, timeout=5,
-        )
-    except Exception:
-        pass
-
-
 def shutdown_project_server(project_root: str | Path | None) -> None:
     key = _resolve_key(project_root)
     pid = _SERVER_PIDS.pop(key, None)
@@ -105,6 +96,7 @@ def shutdown_project_server(project_root: str | Path | None) -> None:
         _kill_pid(pid)
     _SERVER_PORTS.pop(key, None)
     _SPAWNED_THIS_RUN.discard(key)
+    _SKILL_VERSIONS.pop(key, None)
 
 
 def shutdown_all_servers() -> None:
@@ -125,23 +117,32 @@ def _wait_for_port(port: int, timeout: float = 15) -> None:
 def _ensure_server(options: dict[str, Any]) -> str:
     """Return ``http://127.0.0.1:<port>`` for a running opencode server.
 
-    First call per project per process kills ALL stale opencode servers,
-    then spawns a fresh one. Subsequent calls reuse the same server.
+    Servers are owned by this process and isolated by project.
     """
     key = _resolve_key(options.get("cwd"))
+    server_env = options.get("server_env")
+    if server_env is not None:
+        # OpenCode caches its skill catalog. An optimizer edit or checkout changes
+        # the skill seen by subsequent answer sessions, including held-out test.
+        digest = hashlib.sha256()
+        for path in sorted((Path(key) / ".claude" / "skills").glob("*/SKILL.md")):
+            digest.update(path.parent.name.encode() + b"\0" + path.read_bytes() + b"\0")
+        version = digest.digest()
+        if key in _SKILL_VERSIONS and _SKILL_VERSIONS[key] != version:
+            shutdown_project_server(key)
+        _SKILL_VERSIONS[key] = version
 
     if key in _SPAWNED_THIS_RUN:
         port = _SERVER_PORTS.get(key)
         if port is not None:
             return f"http://127.0.0.1:{port}"
 
-    # kill ALL opencode servers from previous runs
-    _kill_all_opencode_servers()
-    time.sleep(0.5)
-
     port = _find_free_port()
     env = dict(os.environ)
-    apply_provider_auth_env(options.get("provider_id"), env)
+    if server_env is None:
+        apply_provider_auth_env(options.get("provider_id"), env)
+    else:
+        env.update(server_env)
 
     proc = subprocess.Popen(
         ["opencode", "serve", "--port", str(port), "--hostname", "127.0.0.1"],
@@ -158,7 +159,8 @@ def _ensure_server(options: dict[str, Any]) -> str:
     _wait_for_port(port)
 
     base_url = f"http://127.0.0.1:{port}"
-    _push_provider_auth(base_url)
+    if server_env is None:
+        _push_provider_auth(base_url)
     return base_url
 
 
@@ -185,7 +187,8 @@ async def execute_query(options: dict[str, Any], query: str) -> list[Any]:
     if not isinstance(options, dict):
         raise TypeError(f"OpenCode executor requires dict options, got {type(options)}")
 
-    ensure_provider_api_key(options.get("provider_id"))
+    if "server_env" not in options:
+        ensure_provider_api_key(options.get("provider_id"))
     base_url = _ensure_server(options)
 
     async with httpx.AsyncClient(base_url=base_url, timeout=_TIMEOUT) as client:
@@ -206,6 +209,9 @@ async def execute_query(options: dict[str, Any], query: str) -> list[Any]:
             body["system"] = options["system"]
         if options.get("tools"):
             body["tools"] = options["tools"]
+            if "server_env" in options:
+                # Unspecified OpenCode tools are otherwise enabled by default.
+                body["tools"] = {"*": False, **options["tools"], "StructuredOutput": True}
         if options.get("mode"):
             body["mode"] = options["mode"]
         if options.get("format"):

@@ -26,3 +26,18 @@ and native stopping criteria apply. The answering agent can invoke project skill
 structured answers. The proposer and generator use EvoSkill's native profiles.
 `--model` overrides the model for all roles. Results are under the run's `.evoskill/` in
 `train_result.json`, `test_results.jsonl`, and `test_summary.json`.
+
+For an OpenAI-compatible Chat Completions gateway, use the existing OpenCode
+harness and install the `opencode` CLI on PATH (tested with 1.18.x).
+Set `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_API_KEY`,
+`OPENAI_COMPATIBLE_MODEL`, `TARGET_OPENAI_COMPATIBLE_MAX_TOKENS`,
+`OPTIMIZER_OPENAI_COMPATIBLE_MAX_TOKENS` and `SKILLOPT_WORKERS` before launch.
+
+```sh
+python examples/searchqa/run.py --harness openai-compatible --work-dir /path/to/new-searchqa-run
+```
+
+The two role budgets limit generated tokens. Both aliases resolve to the exact
+deployment name, including embedded slashes. `--workers` overrides the dev/test
+concurrency. The base agent can load project skills and submit structured
+answers. Optimizers use the native profiles, tools and structured schemas.

@@ -26,10 +26,12 @@ def _reset_executor_state():
     executor._SERVER_PORTS.clear()
     executor._SERVER_PIDS.clear()
     executor._SPAWNED_THIS_RUN.clear()
+    executor._SKILL_VERSIONS.clear()
     yield
     executor._SERVER_PORTS.clear()
     executor._SERVER_PIDS.clear()
     executor._SPAWNED_THIS_RUN.clear()
+    executor._SKILL_VERSIONS.clear()
 
 
 def _fake_httpx_response(json_data, status_code=200):
@@ -77,7 +79,6 @@ class TestExecuteQuery:
         session_resp, chat_resp, msgs_resp = _make_server_responses()
 
         monkeypatch.setattr(executor, "_find_free_port", lambda: 5555)
-        monkeypatch.setattr(executor, "_kill_all_opencode_servers", lambda: None)
         monkeypatch.setattr(executor, "_push_provider_auth", lambda *a: None)
         monkeypatch.setattr("subprocess.Popen", lambda *a, **kw: (popen_calls.append(kw), SimpleNamespace(pid=99))[1])
         monkeypatch.setattr("time.sleep", lambda _: None)
@@ -138,7 +139,6 @@ class TestExecuteQuery:
             return SimpleNamespace(pid=100 + popen_count)
 
         monkeypatch.setattr(executor, "_find_free_port", lambda: 6666)
-        monkeypatch.setattr(executor, "_kill_all_opencode_servers", lambda: None)
         monkeypatch.setattr(executor, "_push_provider_auth", lambda *a: None)
         monkeypatch.setattr("subprocess.Popen", fake_popen)
         monkeypatch.setattr("time.sleep", lambda _: None)

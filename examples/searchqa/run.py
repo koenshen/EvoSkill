@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -41,7 +42,47 @@ def initialize_workspace(path):
         subprocess.run(["git", *args], cwd=path, check=True)
 
 
-def make_agents(workspace, harness):
+def gateway_environment(workspace, model):
+    """Configure the existing OpenCode harness inside this run's workspace."""
+    base_url = os.environ.get("OPENAI_COMPATIBLE_BASE_URL")
+    if not model or not base_url or not os.environ.get("OPENAI_COMPATIBLE_API_KEY"):
+        raise ValueError("Set OPENAI_COMPATIBLE_MODEL, OPENAI_COMPATIBLE_BASE_URL and OPENAI_COMPATIBLE_API_KEY")
+    models = {}
+    for role in ("target", "optimizer"):
+        name = f"{role.upper()}_OPENAI_COMPATIBLE_MAX_TOKENS"
+        budget = int(os.environ[name])
+        if budget < 1:
+            raise ValueError(f"{name} must be positive")
+        # OpenCode uses context=0 for an unknown context window.
+        models[role] = {
+            "id": model, "tool_call": True, "limit": {"context": 0, "output": budget},
+            "interleaved": {"field": "reasoning_content"},
+        }
+    provider = {
+        "npm": "@ai-sdk/openai-compatible", "env": ["OPENAI_COMPATIBLE_API_KEY"],
+        "options": {"baseURL": base_url.rstrip("/")},
+        "models": models,
+    }
+    config = {
+        "enabled_providers": ["evoskill"], "provider": {"evoskill": provider},
+        "model": "evoskill/optimizer", "small_model": "evoskill/optimizer",
+        "skills": {"paths": [str(workspace / ".claude" / "skills")]},
+        "snapshot": False,  # The native loop already checkpoints candidates in Git.
+        # Session title generation is UI bookkeeping and would bill extra requests.
+        "agent": {"title": {"disable": True}},
+    }
+    state = workspace / ".evoskill" / "opencode"
+    return {
+        "OPENCODE_CONFIG_CONTENT": json.dumps(config),
+        "OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX": str(max(m["limit"]["output"] for m in models.values())),
+        "OPENCODE_DISABLE_EXTERNAL_SKILLS": "true",
+        "OPENCODE_DISABLE_MODELS_FETCH": "true",
+        "XDG_CONFIG_HOME": str(state / "config"), "XDG_DATA_HOME": str(state / "data"),
+        "XDG_STATE_HOME": str(state / "state"), "XDG_CACHE_HOME": str(state / "cache"),
+    }
+
+
+def make_agents(workspace, harness, server_env=None):
     from src.agent_profiles.base_agent.base_agent import make_base_agent_options_from_task
     from src.agent_profiles.prompt_generator.prompt_generator import make_prompt_generator_options
     from src.agent_profiles.prompt_proposer.prompt_proposer import make_prompt_proposer_options
@@ -58,6 +99,8 @@ def make_agents(workspace, harness):
 
     def answer_options():
         options = base_factory()
+        if server_env is not None:
+            return gateway_options(options, "target", {"skill": True})
         # allowed_tools controls approval. tools controls which tools exist in the session.
         options.tools = ["Skill", "StructuredOutput"]
         options.allowed_tools = list(options.tools)
@@ -65,12 +108,22 @@ def make_agents(workspace, harness):
         options.extra_args["strict-mcp-config"] = None
         return options
 
+    def gateway_options(options, role, tools):
+        return {**options, "server_env": server_env, "provider_id": "evoskill",
+                "model_id": role, "model": harness.model, "tools": tools}
+
+    def optimizer(factory, schema):
+        options = factory(**kwargs)
+        if server_env is not None:
+            options = gateway_options(options, "optimizer", options["tools"])
+        return Agent(options, schema, **agent_kwargs)
+
     return LoopAgents(
         base=Agent(answer_options, AgentResponse, **agent_kwargs),
-        skill_proposer=Agent(make_skill_proposer_options(**kwargs), SkillProposerResponse, **agent_kwargs),
-        skill_generator=Agent(make_skill_generator_options(**kwargs), ToolGeneratorResponse, **agent_kwargs),
-        prompt_proposer=Agent(make_prompt_proposer_options(**kwargs), PromptProposerResponse, **agent_kwargs),
-        prompt_generator=Agent(make_prompt_generator_options(**kwargs), PromptGeneratorResponse, **agent_kwargs),
+        skill_proposer=optimizer(make_skill_proposer_options, SkillProposerResponse),
+        skill_generator=optimizer(make_skill_generator_options, ToolGeneratorResponse),
+        prompt_proposer=optimizer(make_prompt_proposer_options, PromptProposerResponse),
+        prompt_generator=optimizer(make_prompt_generator_options, PromptGeneratorResponse),
     )
 
 
@@ -100,24 +153,29 @@ async def evaluate_test(agent, rows, concurrency, out_dir):
 async def run(args, splits):
     from src.cli.config import EvolutionConfig, HarnessConfig
     from src.harness import set_sdk
-    from src.loop import LoopConfig, SelfImprovingLoop
-    from src.registry import ProgramManager
-
     harness = HarnessConfig()
     if args.model:
         harness.model = args.model
-    set_sdk(harness.name)
     workspace = args.work_dir.expanduser().resolve()
+    server_env = None
+    if args.harness == "openai-compatible":
+        harness.name = "opencode"
+        harness.model = args.model or os.environ.get("OPENAI_COMPATIBLE_MODEL")
+        server_env = gateway_environment(workspace, harness.model)
+    set_sdk(harness.name)
+    from src.loop import LoopConfig, SelfImprovingLoop
+    from src.registry import ProgramManager
+
     evolution = EvolutionConfig()
     config = LoopConfig(
         max_iterations=evolution.iterations, frontier_size=evolution.frontier_size,
-        no_improvement_limit=evolution.no_improvement_limit, concurrency=evolution.concurrency,
+        no_improvement_limit=evolution.no_improvement_limit, concurrency=args.workers or evolution.concurrency,
         evolution_mode=evolution.mode, failure_sample_count=evolution.failure_samples,
         categories_per_batch=evolution.failure_samples, cache_dir=workspace / ".cache" / "runs",
     )
     initialize_workspace(workspace)
     manager = ProgramManager(cwd=workspace)
-    agents = make_agents(workspace, harness)
+    agents = make_agents(workspace, harness, server_env)
     train = {"default": encode_items(splits["train"])}
     dev = [(question, answers, "default") for question, answers in encode_items(splits["val"])]
 
@@ -142,9 +200,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--work-dir", type=Path, help="New directory for the isolated run")
     parser.add_argument("--split-dir", type=Path, help="Existing SkillOpt SearchQA payload")
-    parser.add_argument("--model", help="Override the default Claude harness model")
+    parser.add_argument("--harness", choices=["claude", "openai-compatible"], default="claude")
+    parser.add_argument("--model", help="Set the deployment for every model role")
+    parser.add_argument("--workers", type=int, default=os.environ.get("SKILLOPT_WORKERS"),
+                        help="Concurrent validation/test answers (default: SKILLOPT_WORKERS or native 4)")
     parser.add_argument("--check-data", action="store_true", help="Validate the split without running agents")
     args = parser.parse_args()
+    if args.workers is not None and args.workers < 1:
+        parser.error("--workers must be positive")
     if not args.check_data and args.work_dir is None:
         parser.error("--work-dir is required for a run")
     splits = load_splits(args.split_dir)
