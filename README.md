@@ -379,6 +379,11 @@ The opt-in [candidate dev early-stop mode](examples/searchqa/README.md#candidate
 uses `--dev-early-stop --dev-order hard-first --dev-batch-size 4` in a fresh run.
 All 1,400 test questions are still evaluated after training.
 
+The [fixed-benchmark runner](examples/searchqa/README.md) also supports
+`--benchmark triviaqa`, `--benchmark hotpotqa` and `--benchmark bird`.
+Give each full run a fresh work directory; `--check-data` verifies its fixed
+split and required database files offline.
+
 ## Harbor Integration
 
 [Harbor](https://github.com/harbor-framework/harbor) is a framework for evaluating AI agents against containerized benchmark tasks. EvoSkill integrates with Harbor as an alternative to CSV-based datasets, using Harbor's built-in verifiers as the scoring mechanism.

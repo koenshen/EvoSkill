@@ -124,6 +124,7 @@ class SelfImprovingLoop:
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
         task_constraints: str = "",
         dev_gate: DevGate | None = None,
+        normalize_training_answers: bool = True,
     ):
         """Initialize the self-improving loop.
 
@@ -145,6 +146,7 @@ class SelfImprovingLoop:
         self.on_event = on_event
         self.task_constraints = task_constraints
         self.dev_gate = dev_gate
+        self.normalize_training_answers = normalize_training_answers
 
         # Round-robin sampling state
         self._category_offset = 0  # Which category to start with next iteration
@@ -316,11 +318,12 @@ class SelfImprovingLoop:
                 agent_answer = (
                     trace.output.final_answer if trace.output and trace.output.final_answer else "[PARSE FAILED]"
                 )
-                avg_score = self.scorer(
-                    question,
-                    agent_answer.strip().lower(),
-                    answer.strip().lower(),
-                )
+                # Text tasks historically normalize these strings before scoring.
+                # SQL tasks need both predictions and references verbatim.
+                predicted, reference = agent_answer, answer
+                if self.normalize_training_answers:
+                    predicted, reference = predicted.strip().lower(), reference.strip().lower()
+                avg_score = self.scorer(question, predicted, reference)
                 status = "[OK]" if avg_score >= 0.8 else "[FAIL]"
                 if self.on_event is None:
                     _log("", f"    {status} [{category}] {question[:40]}...")

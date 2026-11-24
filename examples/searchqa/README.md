@@ -1,10 +1,55 @@
-# EvoSkill on the fixed SearchQA split
+# EvoSkill on the fixed SearchQA, TriviaQA, HotpotQA and BIRD splits
 
 Run from the EvoSkill checkout with Python 3.12 and the project's dependencies.
 This adapter uses only EvoSkill code and the materialized SearchQA JSON files.
 The default data directory is `../SkillOpt/data/searchqa_split` relative to the
 EvoSkill checkout. Set `SEARCHQA_SPLIT_DIR` or pass `--split-dir` for another
 location. All 400/200/1,400 IDs and their order are validated before any model calls.
+
+`--benchmark` selects the dataset and defaults to `searchqa`. Each dataset reads
+its own `../SkillOpt/data/<benchmark>_split/{train,val,test}/items.json` and
+checks the SHA-256 digest of the ordered IDs for every split. Use `--split-dir`
+or the corresponding `TRIVIAQA_SPLIT_DIR`, `HOTPOTQA_SPLIT_DIR`, or
+`BIRD_SPLIT_DIR` to choose a different copy of that benchmark.
+
+| Benchmark | Train / dev / test | Scoring |
+|---|---|---|
+| TriviaQA | 1,600 / 200 / 1,000 | Multi-reference EM and token F1, including all supplied aliases |
+| HotpotQA | 1,600 / 200 / 1,000 | Answer EM and token F1 from the supplied passages |
+| BIRD | 834 / 200 / 500 | SQLite execution accuracy (EX) |
+
+The native agent, skill tools, training sample selection, proposer, generator
+and frontier remain the same. The QA benchmarks send the existing context and
+question through EvoSkill's QA formatter. BIRD sends the complete stored
+`prompt` to the agent, which puts the SQL in its structured `final_answer`.
+The reference SQL and database path are withheld from the answering agent.
+Prediction and gold share a
+30-second deadline in the same read-only database; EX compares sets of rows.
+The native optimizer receives the scored training failures as usual.
+
+To preflight on the CPU server without creating a workspace or making model calls:
+
+```sh
+for benchmark in triviaqa hotpotqa bird; do
+  python examples/searchqa/run.py --benchmark "$benchmark" --check-data
+done
+```
+
+For a full run, use the original gateway environment described below, set
+`SKILLOPT_WORKERS=24`, and use a fresh work directory per benchmark:
+
+```sh
+python examples/searchqa/run.py --benchmark triviaqa --harness openai-compatible --work-dir /path/to/new-triviaqa-run
+python examples/searchqa/run.py --benchmark hotpotqa --harness openai-compatible --work-dir /path/to/new-hotpotqa-run
+python examples/searchqa/run.py --benchmark bird --harness openai-compatible --work-dir /path/to/new-bird-run
+```
+
+BIRD defaults to the sibling `bird-text-to-sql-260820/data_dev/dev_databases`;
+`--db-root` or `BIRD_DB_ROOT` overrides the directory. The preflight checks that
+each referenced `<db_id>/<db_id>.sqlite` exists. BIRD's `test_results.jsonl`
+includes the extracted SQL, execution status and EX; `test_summary.json`
+contains `dev_ex` for the best retained program and `test.ex`. All test items
+remain in the denominator. The optional mild dev gate below is specific to SearchQA.
 
 ```sh
 python examples/searchqa/run.py --check-data

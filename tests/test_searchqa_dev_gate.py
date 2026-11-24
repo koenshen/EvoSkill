@@ -119,7 +119,7 @@ def test_full_frontier_rejection_uses_bound_only(tmp_path):
 ])
 def test_searchqa_cli_defaults(monkeypatch, tmp_path, flags, expected):
     monkeypatch.setattr(sys, "argv", ["run.py", "--work-dir", str(tmp_path), *flags])
-    monkeypatch.setattr(searchqa, "load_splits", lambda _: {})
+    monkeypatch.setattr(searchqa, "load_splits", lambda *args: {})
     job = AsyncMock()
     monkeypatch.setattr(searchqa, "run", job)
     searchqa.main()
@@ -135,6 +135,7 @@ def test_searchqa_run_gates_only_dev(monkeypatch, tmp_path, enabled):
     args = SimpleNamespace(
         harness="claude", model="offline", workers=24, work_dir=tmp_path,
         dev_early_stop=enabled, dev_order="easy-first", dev_batch_size=4,
+        benchmark="searchqa", db_root=None,
     )
     splits = {
         split: [
@@ -144,7 +145,7 @@ def test_searchqa_run_gates_only_dev(monkeypatch, tmp_path, enabled):
         for split, n in [("train", 400), ("val", 200), ("test", 1400)]
     }
     monkeypatch.setattr(harness, "set_sdk", Mock())
-    monkeypatch.setattr(searchqa, "initialize_workspace", lambda path: (path / ".evoskill").mkdir())
+    monkeypatch.setattr(searchqa, "initialize_workspace", lambda path, _: (path / ".evoskill").mkdir())
     monkeypatch.setattr(registry, "ProgramManager", Mock())
     agents = SimpleNamespace(base=object())
     monkeypatch.setattr(searchqa, "make_agents", lambda *args: agents)
@@ -160,4 +161,4 @@ def test_searchqa_run_gates_only_dev(monkeypatch, tmp_path, enabled):
         assert options.order == "easy-first" and options.batch_size == 4
     else:
         assert options is None
-    test.assert_awaited_once_with(agents.base, splits["test"], 24, tmp_path / ".evoskill")
+    test.assert_awaited_once_with(agents.base, splits["test"], 24, tmp_path / ".evoskill", "searchqa", None)
