@@ -41,3 +41,29 @@ The two role budgets limit generated tokens. Both aliases resolve to the exact
 deployment name, including embedded slashes. `--workers` overrides the dev/test
 concurrency. The base agent can load project skills and submit structured
 answers. Optimizers use the native profiles, tools and structured schemas.
+
+### Candidate dev early stopping
+
+Add `--dev-early-stop` to the original SearchQA command to opt in. The defaults are
+`--dev-order hard-first --dev-batch-size 4`; `--dev-order easy-first` reverses the
+historical mean EM ordering. Ties keep the fixed manifest order. The initial base is
+scored on the full dev split. The base and candidates for spare slots retain normal
+concurrency. When rejection is possible, only the next batch is submitted. Only
+observed item scores (including zero for a failed answer) enter its history.
+
+An unfilled frontier accepts every candidate and needs its full score. Once full,
+after `k` of `N` dev answers with `c` correct, the candidate is discarded when
+`(c + N - k) / N <= lowest_frontier_score`. Equality fails EvoSkill's strict
+admission test. Kept candidates receive exact scores. A partial rejection records
+the measured interval in proposer feedback, with no exact score or parent delta.
+This preserves the decision on fixed answers; later proposals can respond differently
+to the bounded feedback. The seven-iteration loop, its native stopping criterion
+and the full 1,400-item final test use their normal logic.
+
+The run workspace's `.evoskill/dev_evaluations.json` records manifest IDs, ordering,
+batch size, observed IDs/EM, total/evaluated counts, bounds, cutoff and reason for
+each base or candidate assessment. The fixed SearchQA CLI requires a new workspace;
+the native loop's continue mode can reload this journal for the same dev configuration.
+In the archived original run the base and two candidates scored 107, 157 and 158 out
+of 200, exactly filling the three slots. This rule would skip **0/600** dev answers
+on that trajectory, for either order.

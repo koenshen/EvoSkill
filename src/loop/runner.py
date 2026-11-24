@@ -62,6 +62,7 @@ from src.schemas import (
 )
 
 from .config import LoopConfig
+from .dev_gate import DevGate
 from .helpers import (
     build_proposer_query,
     build_skill_query,
@@ -122,6 +123,7 @@ class SelfImprovingLoop:
         scorer: Callable[[str, str, str], float] | None = None,
         on_event: Callable[[str, dict[str, Any]], None] | None = None,
         task_constraints: str = "",
+        dev_gate: DevGate | None = None,
     ):
         """Initialize the self-improving loop.
 
@@ -142,6 +144,7 @@ class SelfImprovingLoop:
         self.scorer = scorer or _score_multi_tolerance
         self.on_event = on_event
         self.task_constraints = task_constraints
+        self.dev_gate = dev_gate
 
         # Round-robin sampling state
         self._category_offset = 0  # Which category to start with next iteration
@@ -225,6 +228,8 @@ class SelfImprovingLoop:
         """
         # 0. Handle continue mode and feedback reset
         resume_iteration: int | None = None
+        if self.dev_gate is not None:
+            self.dev_gate.start(resume=self.config.continue_mode)
         if not self.config.continue_mode:
             # Start fresh: reset feedback if configured
             if self.config.reset_feedback and self._feedback_path.exists():
@@ -346,10 +351,25 @@ class SelfImprovingLoop:
 
                 # Evaluate child
                 _log("", f"  -> Evaluating {child_name}...")
-                child_score = await self._evaluate(self.val_data)  # accumulates to self._iter_cost
+                bounds = None
+                if self.dev_gate is None:
+                    child_score = await self._evaluate(self.val_data)
+                else:
+                    frontier = self.manager.get_frontier_with_scores()
+                    cutoff = frontier[-1][1] if len(frontier) >= self.config.frontier_size else None
+                    assessment = await self.dev_gate.evaluate(
+                        child_name, self.val_data, self._score_dev_items, cutoff=cutoff,
+                    )
+                    if assessment.stopped:
+                        bounds = (assessment.lower, assessment.upper)
+                        child_score = None
+                        _log("", f"  -> Dev stopped at {len(assessment.observations)}/{assessment.n_total}; "
+                                 f"upper={assessment.upper:.4f} <= frontier floor {cutoff:.4f}")
+                    else:
+                        child_score = assessment.lower
 
                 # Update frontier or discard
-                added = self.manager.update_frontier(
+                added = child_score is not None and self.manager.update_frontier(
                     child_name, child_score, max_size=self.config.frontier_size
                 )
 
@@ -358,19 +378,21 @@ class SelfImprovingLoop:
                     outcome = "improved" if child_score > parent_score else "kept"
                     no_improvement_count = 0
                 else:
-                    _log("", f"  [SKIP] Discarded (score: {child_score:.4f})")
+                    score_text = f"{child_score:.4f}" if child_score is not None else f"<= {bounds[1]:.4f}"
+                    _log("", f"  [SKIP] Discarded (score: {score_text})")
                     outcome = "discarded"
                     self.manager.discard(child_name)
                     no_improvement_count += 1
 
                 self._emit(
-                    "eval_result",
+                    "eval_result" if bounds is None else "dev_early_reject",
                     child_name=child_name,
                     score=child_score,
                     parent_score=parent_score,
                     added=added,
                     frontier=self.manager.get_frontier_with_scores(),
                     n_skills=len(self._get_active_skills()),
+                    **({"score_bounds": bounds} if bounds is not None else {}),
                 )
 
                 # Record feedback with outcome for future proposers to learn from
@@ -384,6 +406,7 @@ class SelfImprovingLoop:
                     score=child_score,
                     parent_score=parent_score,
                     active_skills=active_skills,
+                    score_bounds=bounds,
                 )
 
             # Check early stopping
@@ -433,7 +456,12 @@ class SelfImprovingLoop:
         self.manager.switch_to("base")
         _log("", f"  -> Evaluating on {len(self.val_data)} samples...")
         self._iter_cost = 0.0
-        base_score = await self._evaluate(self.val_data)
+        if self.dev_gate is None:
+            base_score = await self._evaluate(self.val_data)
+        else:
+            base_score = (await self.dev_gate.evaluate(
+                "base", self.val_data, self._score_dev_items, cutoff=None,
+            )).lower
         self._total_cost += self._iter_cost
         self.manager.update_frontier(
             "base", base_score, max_size=self.config.frontier_size
@@ -452,24 +480,26 @@ class SelfImprovingLoop:
         Returns:
             Accuracy score (0.0 to 1.0).
         """
-        # Convert to (question, answer) format for evaluate_agent_parallel
+        scores = await self._score_dev_items(data)
+        return sum(scores) / len(scores)
+
+    async def _score_dev_items(self, data: list[tuple[str, str, str]]) -> list[float]:
         qa_data = [(q, a) for q, a, _ in data]
         results = await evaluate_agent_parallel(
             self.agents.base, qa_data, max_concurrent=self.config.concurrency, cache=self.cache
         )
 
-        score = 0.0
-        for result in results:
+        scores = []
+        for (question, gold), result in zip(qa_data, results, strict=True):
+            if (result.question, result.ground_truth) != (question, gold):
+                raise ValueError("Dev results do not follow the submitted item order")
             if result.trace is not None:
                 self._iter_cost += result.trace.total_cost_usd
-            if result.trace is None or result.trace.output is None:
-                continue  # Timeout/error/parse failed = 0 score
-            score += self.scorer(
-                result.question,
-                result.trace.output.final_answer,
-                result.ground_truth,
-            )
-        return score / len(results)
+            score = 0.0  # A completed timeout/error/parse failure scores zero.
+            if result.trace is not None and result.trace.output is not None:
+                score = self.scorer(question, result.trace.output.final_answer, gold)
+            scores.append(score)
+        return scores
 
     async def _mutate(
         self,

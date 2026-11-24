@@ -375,6 +375,10 @@ The first attempt in `20261124-r1/evoskill` exited while creating the initial Gi
 
 Attach with `tmux -L sq-original-evoskill attach -t sq-original-evoskill`. The run directory contains `console.log` and, after exit, `exit.code`. The best program's dev EM and held-out test EM/F1 are in `workspace/.evoskill/test_summary.json`. Use a fresh run directory for a repeat. See the [fixed SearchQA workflow](examples/searchqa/README.md) for data fingerprints and per-item outputs.
 
+The opt-in [candidate dev early-stop mode](examples/searchqa/README.md#candidate-dev-early-stopping)
+uses `--dev-early-stop --dev-order hard-first --dev-batch-size 4` in a fresh run.
+All 1,400 test questions are still evaluated after training.
+
 ## Harbor Integration
 
 [Harbor](https://github.com/harbor-framework/harbor) is a framework for evaluating AI agents against containerized benchmark tasks. EvoSkill integrates with Harbor as an alternative to CSV-based datasets, using Harbor's built-in verifiers as the scoring mechanism.

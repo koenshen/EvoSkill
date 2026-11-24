@@ -159,6 +159,7 @@ def append_feedback(
     active_skills: list[str] | None = None,
     failure_category: str | None = None,
     root_cause: str | None = None,
+    score_bounds: tuple[float, float] | None = None,
 ) -> None:
     """Append feedback entry to history file with outcome tracking.
 
@@ -180,6 +181,9 @@ def append_feedback(
         delta = (score - parent_score) if (score is not None and parent_score is not None) else None
         delta_str = f" ({delta:+.4f})" if delta is not None else ""
         score_str = f" (score: {score:.4f}{delta_str})" if score is not None else ""
+        if score_bounds is not None:
+            lower, upper = score_bounds
+            score_str = f" (partial dev; score in [{lower:.4f}, {upper:.4f}]; exact score unknown)"
         outcome_section = f"\n**Outcome**: {outcome.upper()}{score_str}"
 
     # Build diagnostic section

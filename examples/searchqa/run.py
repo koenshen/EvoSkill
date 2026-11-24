@@ -164,6 +164,7 @@ async def run(args, splits):
         server_env = gateway_environment(workspace, harness.model)
     set_sdk(harness.name)
     from src.loop import LoopConfig, SelfImprovingLoop
+    from src.loop.dev_gate import DevGate
     from src.registry import ProgramManager
 
     evolution = EvolutionConfig()
@@ -182,8 +183,12 @@ async def run(args, splits):
     def score_em(question, predicted, gold):
         return score_response(predicted or "", json.loads(gold))["em"]
 
+    dev_gate = None
+    if args.dev_early_stop:
+        dev_gate = DevGate([row["id"] for row in splits["val"]], args.dev_order, args.dev_batch_size,
+                           workspace / ".evoskill" / "dev_evaluations.json")
     loop = SelfImprovingLoop(config, agents, manager, train, dev, scorer=score_em,
-                             task_constraints=CONSTRAINTS)
+                             task_constraints=CONSTRAINTS, dev_gate=dev_gate)
     result = await loop.run()
     out_dir = workspace / ".evoskill"
     (out_dir / "train_result.json").write_text(json.dumps(asdict(result), indent=2) + "\n")
@@ -205,9 +210,17 @@ def main():
     parser.add_argument("--workers", type=int, default=os.environ.get("SKILLOPT_WORKERS"),
                         help="Concurrent validation/test answers (default: SKILLOPT_WORKERS or native 4)")
     parser.add_argument("--check-data", action="store_true", help="Validate the split without running agents")
+    parser.add_argument("--dev-early-stop", action="store_true",
+                        help="Certify dev rejection when a candidate cannot enter the full frontier")
+    parser.add_argument("--dev-order", choices=("hard-first", "easy-first"), default="hard-first",
+                        help="Order candidates' dev items by historical mean EM")
+    parser.add_argument("--dev-batch-size", type=int, default=4,
+                        help="New dev items submitted before checking the rejection bound")
     args = parser.parse_args()
     if args.workers is not None and args.workers < 1:
         parser.error("--workers must be positive")
+    if args.dev_batch_size < 1:
+        parser.error("--dev-batch-size must be positive")
     if not args.check_data and args.work_dir is None:
         parser.error("--work-dir is required for a run")
     splits = load_splits(args.split_dir)
